@@ -44,6 +44,7 @@ public:
         MOTOR_FRAME_HELI_DUAL = 11,
         MOTOR_FRAME_DODECAHEXA = 12,
         MOTOR_FRAME_HELI_QUAD = 13,
+        MOTOR_FRAME_DECA = 14,
     };
     enum motor_frame_type {
         MOTOR_FRAME_TYPE_PLUS = 0,
@@ -71,17 +72,18 @@ public:
     static AP_Motors    *get_singleton(void) { return _singleton; }
 
     // check initialisation succeeded
-    bool                initialised_ok() const { return _flags.initialised_ok; }
+    bool                initialised_ok() const { return _initialised_ok; }
+    void                set_initialised_ok(bool val) { _initialised_ok = val; }
 
     // arm, disarm or check status status of motors
-    bool                armed() const { return _flags.armed; }
+    bool                armed() const { return _armed; }
     void                armed(bool arm);
 
     // set motor interlock status
-    void                set_interlock(bool set) { _flags.interlock = set;}
+    void                set_interlock(bool set) { _interlock = set;}
 
     // get motor interlock status.  true means motors run, false motors don't run
-    bool                get_interlock() const { return _flags.interlock; }
+    bool                get_interlock() const { return _interlock; }
 
     // set_roll, set_pitch, set_yaw, set_throttle
     void                set_roll(float roll_in) { _roll_in = roll_in; };        // range -1 ~ +1
@@ -147,6 +149,9 @@ public:
         uint8_t throttle_upper  : 1; // we have reached throttle's upper limit
     } limit;
 
+    // set limit flag for pitch, roll and yaw
+    void set_limit_flag_pitch_roll_yaw(bool flag);
+
     //
     // virtual functions that should be implemented by child classes
     //
@@ -198,14 +203,21 @@ public:
                     PWM_TYPE_DSHOT600   = 6,
                     PWM_TYPE_DSHOT1200  = 7};
     pwm_type            get_pwm_type(void) const { return (pwm_type)_pwm_type.get(); }
-    
+
 protected:
     // output functions that should be overloaded by child classes
     virtual void        output_armed_stabilizing() = 0;
     virtual void        rc_write(uint8_t chan, uint16_t pwm);
     virtual void        rc_write_angle(uint8_t chan, int16_t angle_cd);
     virtual void        rc_set_freq(uint32_t mask, uint16_t freq_hz);
-    virtual uint32_t    rc_map_mask(uint32_t mask) const;
+
+
+    /*
+      map an internal motor mask to real motor mask, accounting for
+      SERVOn_FUNCTION mappings, and allowing for multiple outputs per
+      motor number
+    */
+    uint32_t    motor_mask_to_srv_channel_mask(uint32_t mask) const;
 
     // add a motor to the motor map
     void add_motor_num(int8_t motor_num);
@@ -215,13 +227,6 @@ protected:
 
     // save parameters as part of disarming
     virtual void save_params_on_disarm() {}
-
-    // flag bitmask
-    struct AP_Motors_flags {
-        uint8_t armed              : 1;    // 0 if disarmed, 1 if armed
-        uint8_t interlock          : 1;    // 1 if the motor interlock is enabled (i.e. motors run), 0 if disabled (motors don't run)
-        uint8_t initialised_ok     : 1;    // 1 if initialisation was successful
-    } _flags;
 
     // internal variables
     uint16_t            _loop_rate;                 // rate in Hz at which output() function is called (normally 400hz)
@@ -261,7 +266,13 @@ protected:
     float               _thrust_boost_ratio;    // choice between highest and second highest motor output for output mixing (0 ~ 1). Zero is normal operation
 
 private:
+
+    bool _armed;             // 0 if disarmed, 1 if armed
+    bool _interlock;         // 1 if the motor interlock is enabled (i.e. motors run), 0 if disabled (motors don't run)
+    bool _initialised_ok;    // 1 if initialisation was successful
+
     static AP_Motors *_singleton;
+
 };
 
 namespace AP {

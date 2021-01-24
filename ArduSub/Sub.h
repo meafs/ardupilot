@@ -45,8 +45,6 @@
 #include <AP_Compass/AP_Compass.h>         // ArduPilot Mega Magnetometer Library
 #include <AP_InertialSensor/AP_InertialSensor.h>  // ArduPilot Mega Inertial Sensor (accel & gyro) Library
 #include <AP_AHRS/AP_AHRS.h>
-#include <AP_NavEKF2/AP_NavEKF2.h>
-#include <AP_NavEKF3/AP_NavEKF3.h>
 #include <AP_Mission/AP_Mission.h>         // Mission command library
 #include <AC_AttitudeControl/AC_AttitudeControl_Sub.h> // Attitude control library
 #include <AC_AttitudeControl/AC_PosControl_Sub.h>      // Position control library
@@ -130,8 +128,9 @@ public:
 
     Sub(void);
 
-    // HAL::Callbacks implementation.
-    void loop() override;
+protected:
+
+    bool should_zero_rc_outputs_on_reboot() const override { return true; }
 
 private:
 
@@ -141,9 +140,6 @@ private:
     // Global parameters are all contained within the 'g' class.
     Parameters g;
     ParametersG2 g2;
-
-    // main loop scheduler
-    AP_Scheduler scheduler{FUNCTOR_BIND_MEMBER(&Sub::fast_loop, void)};
 
     // primary input control channels
     RC_Channel *channel_roll;
@@ -210,7 +206,7 @@ private:
             uint8_t at_bottom           : 1; // true if we are at the bottom
             uint8_t at_surface          : 1; // true if we are at the surface
             uint8_t depth_sensor_present: 1; // true if there is a depth sensor detected at boot
-            uint8_t compass_init_location:1; // true when the compass's initial location has been set
+            uint8_t unused1             : 1; // was compass_init_location; true when the compass's initial location has been set
         };
         uint32_t value;
     } ap;
@@ -314,6 +310,9 @@ private:
     // Flag indicating if we are currently using input hold
     bool input_hold_engaged;
 
+    // Flag indicating if we are currently controlling Pitch and Roll instead of forward/lateral
+    bool roll_pitch_flag = false;
+
     // 3D Location vectors
     // Current location of the Sub (altitude is relative to home)
     Location current_loc;
@@ -343,11 +342,6 @@ private:
     int32_t condition_value;  // used in condition commands (eg delay, change alt, etc.)
     uint32_t condition_start;
 
-    // IMU variables
-    // Integration time (in seconds) for the gyros (DCM algorithm)
-    // Updated with the fast loop
-    float G_Dt;
-
     // Inertial Navigation
     AP_InertialNav_NavEKF inertial_nav;
 
@@ -369,7 +363,7 @@ private:
 #endif
 
     // Camera/Antenna mount tracking and stabilisation stuff
-#if MOUNT == ENABLED
+#if HAL_MOUNT_ENABLED
     AP_Mount camera_mount;
 #endif
 
@@ -412,14 +406,13 @@ private:
     static const AP_Param::Info var_info[];
     static const struct LogStructure log_structure[];
 
-    void fast_loop();
+    void fast_loop() override;
     void fifty_hz_loop();
     void update_batt_compass(void);
     void ten_hz_logging_loop();
     void twentyfive_hz_logging();
     void three_hz_loop();
     void one_hz_loop();
-    void update_GPS(void);
     void update_turn_counter();
     void read_AHRS(void);
     void update_altitude();
@@ -433,7 +426,6 @@ private:
     float get_surface_tracking_climb_rate(int16_t target_rate, float current_alt_target, float dt);
     void update_poscon_alt_max();
     void rotate_body_frame_to_NE(float &x, float &y);
-    void send_heartbeat(mavlink_channel_t chan);
 #if RPM_ENABLED == ENABLED
     void rpm_update();
 #endif
@@ -520,6 +512,7 @@ private:
 
     bool stabilize_init(void);
     void stabilize_run();
+    void control_depth();
     bool manual_init(void);
     void manual_run();
     void failsafe_sensors_check(void);
@@ -617,6 +610,7 @@ private:
     void auto_spline_start(const Location& destination, bool stopped_at_start, AC_WPNav::spline_segment_end_type seg_end_type, const Location& next_destination);
     void log_init(void);
     void accel_cal_update(void);
+    void read_airspeed();
 
     void failsafe_leak_check();
     void failsafe_internal_pressure_check();
@@ -644,6 +638,11 @@ private:
     uint32_t last_do_motor_test_ms = 0;
 
     bool control_check_barometer();
+
+    // vehicle specific waypoint info helpers
+    bool get_wp_distance_m(float &distance) const override;
+    bool get_wp_bearing_deg(float &bearing) const override;
+    bool get_wp_crosstrack_error_m(float &xtrack_error) const override;
 
     enum Failsafe_Action {
         Failsafe_Action_None    = 0,

@@ -70,6 +70,8 @@ public:
         Notify_LED_NCP5623_I2C_External     = (1 << 6), // External NCP5623
         Notify_LED_NCP5623_I2C_Internal     = (1 << 7), // Internal NCP5623
         Notify_LED_NeoPixel                 = (1 << 8), // NeoPixel 5050 AdaFruit 1655 SK6812  Worldsemi WS2812B
+        Notify_LED_ProfiLED                 = (1 << 9), // ProfiLED
+        Notify_LED_Scripting                = (1 << 10),// Colour accessor for scripting
         Notify_LED_MAX
     };
 
@@ -101,6 +103,7 @@ public:
         bool waiting_for_throw;   // true when copter is in THROW mode and waiting to detect the user hand launch
         bool powering_off;        // true when the vehicle is powering off
         bool video_recording;     // true when the vehicle is recording video
+        bool temp_cal_running;    // true if a temperature calibration is running
     };
 
     /// notify_events_type - bitmask of active events.
@@ -123,6 +126,9 @@ public:
         uint32_t tune_next              : 3;    // tuning switched to next parameter
         uint32_t tune_save              : 1;    // tuning saved parameters
         uint32_t tune_error             : 1;    // tuning controller error
+        uint32_t initiated_temp_cal     : 1;    // 1 when temperature calibration starts
+        uint32_t temp_cal_saved         : 1;    // 1 when temperature calibration was just saved
+        uint32_t temp_cal_failed        : 1;    // 1 when temperature calibration has just failed
     };
 
     // The notify flags and values are static to allow direct class access
@@ -139,7 +145,7 @@ public:
     // handle a LED_CONTROL message
     static void handle_led_control(const mavlink_message_t &msg);
 
-    // handle RGB from Scripting
+    // handle RGB from Scripting or AP_Periph
     static void handle_rgb(uint8_t r, uint8_t g, uint8_t b, uint8_t rate_hz = 0);
 
     // handle a PLAY_TUNE message
@@ -163,7 +169,8 @@ public:
     uint8_t get_buzz_pin() const  { return _buzzer_pin; }
     uint8_t get_buzz_level() const  { return _buzzer_level; }
     uint8_t get_buzz_volume() const  { return _buzzer_volume; }
-    uint8_t get_neo_len() const {return _neo_len; }
+    uint8_t get_led_len() const { return _led_len; }
+    int8_t get_rgb_led_brightness_percent() const;
 
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
     HAL_Semaphore sf_window_mutex;
@@ -188,7 +195,7 @@ private:
     AP_Int32 _led_type;
     AP_Int8 _buzzer_level;
     AP_Int8 _buzzer_volume;
-    AP_Int8 _neo_len;   //adding to define length of ntf neopixel string
+    AP_Int8 _led_len;
 
     char _send_text[NOTIFY_TEXT_BUFFER_SIZE];
     uint32_t _send_text_updated_millis; // last time text changed

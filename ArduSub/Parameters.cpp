@@ -36,12 +36,12 @@ const AP_Param::Info Sub::var_info[] = {
     // @User: Standard
     GSCALAR(surface_depth, "SURFACE_DEPTH", SURFACE_DEPTH_DEFAULT),
 
-    // @Param: SYSID_SW_MREV
+    // @Param: FORMAT_VERSION
     // @DisplayName: Eeprom format version number
     // @Description: This value is incremented when changes are made to the eeprom format
     // @User: Advanced
     // @ReadOnly: True
-    GSCALAR(format_version, "SYSID_SW_MREV",   0),
+    GSCALAR(format_version, "FORMAT_VERSION",   0),
 
     // @Param: SYSID_THISMAV
     // @DisplayName: MAVLink system ID of this vehicle
@@ -452,23 +452,47 @@ const AP_Param::Info Sub::var_info[] = {
     // @Path: GCS_Mavlink.cpp
     GOBJECTN(_gcs.chan_parameters[0],  gcs0,       "SR0_",     GCS_MAVLINK_Parameters),
 
+#if MAVLINK_COMM_NUM_BUFFERS >= 2
     // @Group: SR1_
     // @Path: GCS_Mavlink.cpp
     GOBJECTN(_gcs.chan_parameters[1],  gcs1,       "SR1_",     GCS_MAVLINK_Parameters),
+#endif
 
+#if MAVLINK_COMM_NUM_BUFFERS >= 3
     // @Group: SR2_
     // @Path: GCS_Mavlink.cpp
     GOBJECTN(_gcs.chan_parameters[2],  gcs2,       "SR2_",     GCS_MAVLINK_Parameters),
+#endif
 
+#if MAVLINK_COMM_NUM_BUFFERS >= 4
     // @Group: SR3_
     // @Path: GCS_Mavlink.cpp
     GOBJECTN(_gcs.chan_parameters[3],  gcs3,       "SR3_",     GCS_MAVLINK_Parameters),
+#endif
+
+#if MAVLINK_COMM_NUM_BUFFERS >= 5
+    // @Group: SR4_
+    // @Path: GCS_Mavlink.cpp
+    GOBJECTN(_gcs.chan_parameters[4],  gcs4,       "SR4_",     GCS_MAVLINK_Parameters),
+#endif
+
+#if MAVLINK_COMM_NUM_BUFFERS >= 6
+    // @Group: SR5_
+    // @Path: GCS_Mavlink.cpp
+    GOBJECTN(_gcs.chan_parameters[5],  gcs5,       "SR5_",     GCS_MAVLINK_Parameters),
+#endif
+
+#if MAVLINK_COMM_NUM_BUFFERS >= 7
+    // @Group: SR6_
+    // @Path: GCS_Mavlink.cpp
+    GOBJECTN(_gcs.chan_parameters[6],  gcs6,       "SR6_",     GCS_MAVLINK_Parameters),
+#endif
 
     // @Group: AHRS_
     // @Path: ../libraries/AP_AHRS/AP_AHRS.cpp
     GOBJECT(ahrs,                   "AHRS_",    AP_AHRS),
 
-#if MOUNT == ENABLED
+#if HAL_MOUNT_ENABLED
     // @Group: MNT
     // @Path: ../libraries/AP_Mount/AP_Mount.cpp
     GOBJECT(camera_mount,           "MNT",  AP_Mount),
@@ -490,19 +514,19 @@ const AP_Param::Info Sub::var_info[] = {
     // @Path: ../libraries/AP_BoardConfig/AP_BoardConfig.cpp
     GOBJECT(BoardConfig,            "BRD_",       AP_BoardConfig),
 
-#if HAL_WITH_UAVCAN
+#if HAL_MAX_CAN_PROTOCOL_DRIVERS
     // @Group: CAN_
-    // @Path: ../libraries/AP_BoardConfig/AP_BoardConfig_CAN.cpp
-    GOBJECT(BoardConfig_CAN,        "CAN_",       AP_BoardConfig_CAN),
+    // @Path: ../libraries/AP_CANManager/AP_CANManager.cpp
+    GOBJECT(can_mgr,        "CAN_",       AP_CANManager),
 #endif
 
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
     GOBJECT(sitl, "SIM_", SITL::SITL),
 #endif
 
-    // @Group: GND_
+    // @Group: BARO
     // @Path: ../libraries/AP_Baro/AP_Baro.cpp
-    GOBJECT(barometer, "GND_", AP_Baro),
+    GOBJECT(barometer, "BARO", AP_Baro),
 
     // GPS driver
     // @Group: GPS_
@@ -632,13 +656,18 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
     AP_SUBGROUPINFO(scripting, "SCR_", 18, ParametersG2, AP_Scripting),
 #endif
 
+    // @Group: ARSPD
+    // @Path: ../libraries/AP_Airspeed/AP_Airspeed.cpp
+    AP_SUBGROUPINFO(airspeed, "ARSPD", 19, ParametersG2, AP_Airspeed),
+
     AP_GROUPEND
 };
 
 /*
   constructor for g2 object
  */
-ParametersG2::ParametersG2()
+ParametersG2::ParametersG2():
+    airspeed()
 {
     AP_Param::setup_object_defaults(this, var_info);
 }
@@ -697,9 +726,11 @@ void Sub::load_parameters()
     AP_Param::set_default_by_name("INS_GYR_CAL", 0);
     AP_Param::set_default_by_name("MNT_DEFLT_MODE", MAV_MOUNT_MODE_RC_TARGETING);
     AP_Param::set_default_by_name("MNT_JSTICK_SPD", 100);
+    AP_Param::set_default_by_name("RNGFND1_TYPE", (uint8_t)RangeFinder::Type::MAVLink);
     AP_Param::set_by_name("MNT_RC_IN_PAN", 7);
     AP_Param::set_by_name("MNT_RC_IN_TILT", 8);
-    AP_Param::set_default_by_name("RNGFND1_TYPE", (uint8_t)RangeFinder::Type::MAVLink);
+    // We should ignore this parameter since ROVs are neutral buoyancy
+    AP_Param::set_by_name("MOT_THST_HOVER", 0.5);
 }
 
 void Sub::convert_old_parameters()

@@ -25,8 +25,8 @@
 #define RX_BOUNCE_BUFSIZE 64U
 #define TX_BOUNCE_BUFSIZE 64U
 
-// enough for uartA to uartH, plus IOMCU
-#define UART_MAX_DRIVERS 9
+// enough for uartA to uartI, plus IOMCU
+#define UART_MAX_DRIVERS 10
 
 class ChibiOS::UARTDriver : public AP_HAL::UARTDriver {
 public:
@@ -42,10 +42,15 @@ public:
 
 
     uint32_t available() override;
+    uint32_t available_locked(uint32_t key) override;
+
     uint32_t txspace() override;
     int16_t read() override;
+    ssize_t read(uint8_t *buffer, uint16_t count) override;
     int16_t read_locked(uint32_t key) override;
     void _timer_tick(void) override;
+
+    bool discard_input() override;
 
     size_t write(uint8_t c) override;
     size_t write(const uint8_t *buffer, size_t size) override;
@@ -63,6 +68,7 @@ public:
 
     struct SerialDef {
         BaseSequentialStream* serial;
+        uint8_t instance;
         bool is_usb;
 #ifndef HAL_UART_NODMA
         bool dma_rx;
@@ -122,6 +128,12 @@ private:
     bool rx_dma_enabled;
     bool tx_dma_enabled;
 
+    /*
+      copy of rx_line and tx_line with alternative configs resolved
+     */
+    ioline_t atx_line;
+    ioline_t arx_line;
+    
     // thread used for all UARTs
     static thread_t *uart_thread_ctx;
 
@@ -136,7 +148,7 @@ private:
     uint32_t lock_read_key;
 
     uint32_t _baudrate;
-    uint16_t tx_len;
+    volatile uint16_t tx_len;
 #if HAL_USE_SERIAL == TRUE
     SerialConfig sercfg;
 #endif
@@ -152,7 +164,7 @@ private:
     // we use in-task ring buffers to reduce the system call cost
     // of ::read() and ::write() in the main loop
 #ifndef HAL_UART_NODMA
-    bool tx_bounce_buf_ready;
+    volatile bool tx_bounce_buf_ready;
     volatile uint8_t rx_bounce_idx;
     uint8_t *rx_bounce_buf[2];
     uint8_t *tx_bounce_buf;
@@ -238,3 +250,6 @@ private:
     void thread_init();
     static void uart_thread(void *);
 };
+
+// access to usb init for stdio.cpp
+void usb_initialise(void);

@@ -37,12 +37,12 @@
  * modules are configured with all ubx binary messages off, which
  * would mean we would never detect it.
  */
-#define UBLOX_SET_BINARY "\265\142\006\001\003\000\001\006\001\022\117$PUBX,41,1,0023,0001,115200,0*1C\r\n"
+#define UBLOX_SET_BINARY_115200 "\265\142\006\001\003\000\001\006\001\022\117$PUBX,41,1,0023,0001,115200,0*1C\r\n"
 
-// a varient with 230400 baudrate
+// a variant with 230400 baudrate
 #define UBLOX_SET_BINARY_230400 "\265\142\006\001\003\000\001\006\001\022\117$PUBX,41,1,0023,0001,230400,0*1E\r\n"
 
-// a varient with 460800 baudrate
+// a variant with 460800 baudrate
 #define UBLOX_SET_BINARY_460800 "\265\142\006\001\003\000\001\006\001\022\117$PUBX,41,1,0023,0001,460800,0*11\r\n"
 
 #define UBLOX_RXM_RAW_LOGGING 1
@@ -51,7 +51,6 @@
 #define UBLOX_GNSS_SETTINGS 1
 
 #define UBLOX_MAX_GNSS_CONFIG_BLOCKS 7
-#define UBX_MSG_TYPES 2
 
 #define UBX_TIMEGPS_VALID_WEEK_MASK 0x2
 
@@ -349,9 +348,11 @@ private:
         uint32_t s_acc; 
         uint32_t head_acc; 
         uint16_t p_dop; 
-        uint8_t reserved1[6]; 
-        uint32_t headVeh;
-        uint8_t reserved2[4]; 
+        uint8_t flags3;
+        uint8_t reserved1[5];
+        int32_t headVeh;
+        int16_t magDec;
+        uint16_t magAcc;
     };
     struct PACKED ubx_nav_relposned {
         uint8_t version;
@@ -626,7 +627,8 @@ private:
         UBLOX_6,
         UBLOX_7,
         UBLOX_M8,
-        UBLOX_F9 = 0x80, // comes from MON_VER hwVersion string
+        UBLOX_F9 = 0x80, // comes from MON_VER hwVersion/swVersion strings
+        UBLOX_M9 = 0x81, // comes from MON_VER hwVersion/swVersion strings
         UBLOX_UNKNOWN_HARDWARE_GENERATION = 0xff // not in the ublox spec used for
                                                  // flagging state in the driver
     };
@@ -681,6 +683,9 @@ private:
     struct ubx_mon_ver _version;
     uint32_t        _unconfigured_messages;
     uint8_t         _hardware_generation;
+    uint32_t        _last_pvt_itow;
+    uint32_t        _last_relposned_itow;
+    uint32_t        _last_relposned_ms;
 
     // the role set from GPS_TYPE
     AP_GPS::GPS_Role role;
@@ -726,11 +731,12 @@ private:
     void log_rxm_raw(const struct ubx_rxm_raw &raw);
     void log_rxm_rawx(const struct ubx_rxm_rawx &raw);
 
-    // Calculates the correct log message ID based on what GPS instance is being logged
-    uint8_t _ubx_msg_log_index(uint8_t ubx_msg) {
-        return (uint8_t)(ubx_msg + (state.instance * UBX_MSG_TYPES));
+#if GPS_MOVING_BASELINE
+    // see if we should use uart2 for moving baseline config
+    bool mb_use_uart2(void) const {
+        return (driver_options() & DriverOptions::UBX_MBUseUart2)?true:false;
     }
-
+#endif
 
     // structure for list of config key/value pairs for
     // specific configurations
@@ -753,12 +759,15 @@ private:
     // return true if GPS is capable of F9 config
     bool supports_F9_config(void) const;
 
+#if GPS_MOVING_BASELINE
     // config for moving baseline base
-    static const config_list config_MB_Base[];
+    static const config_list config_MB_Base_uart1[];
+    static const config_list config_MB_Base_uart2[];
 
     // config for moving baseline rover
-    static const config_list config_MB_Rover[];
-    
+    static const config_list config_MB_Rover_uart1[];
+    static const config_list config_MB_Rover_uart2[];
+
     // status of active configuration for a role
     struct {
         const config_list *list;
@@ -769,4 +778,5 @@ private:
 
     // RTCM3 parser for when in moving baseline base mode
     RTCM3_Parser *rtcm3_parser;
+#endif // GPS_MOVING_BASELINE
 };

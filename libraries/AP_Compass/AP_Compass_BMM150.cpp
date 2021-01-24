@@ -63,12 +63,12 @@
 
 extern const AP_HAL::HAL &hal;
 
-AP_Compass_Backend *AP_Compass_BMM150::probe(AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev, enum Rotation rotation)
+AP_Compass_Backend *AP_Compass_BMM150::probe(AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev, bool force_external, enum Rotation rotation)
 {
     if (!dev) {
         return nullptr;
     }
-    AP_Compass_BMM150 *sensor = new AP_Compass_BMM150(std::move(dev), rotation);
+    AP_Compass_BMM150 *sensor = new AP_Compass_BMM150(std::move(dev), force_external, rotation);
     if (!sensor || !sensor->init()) {
         delete sensor;
         return nullptr;
@@ -77,8 +77,8 @@ AP_Compass_Backend *AP_Compass_BMM150::probe(AP_HAL::OwnPtr<AP_HAL::I2CDevice> d
     return sensor;
 }
 
-AP_Compass_BMM150::AP_Compass_BMM150(AP_HAL::OwnPtr<AP_HAL::Device> dev, enum Rotation rotation)
-    : _dev(std::move(dev)), _rotation(rotation)
+AP_Compass_BMM150::AP_Compass_BMM150(AP_HAL::OwnPtr<AP_HAL::Device> dev, bool force_external, enum Rotation rotation)
+    : _dev(std::move(dev)), _rotation(rotation), _force_external(force_external)
 {
 }
 
@@ -211,12 +211,17 @@ bool AP_Compass_BMM150::init()
     _dev->get_semaphore()->give();
 
     /* register the compass instance in the frontend */
-    _compass_instance = register_compass();
+    _dev->set_device_type(DEVTYPE_BMM150);
+    if (!register_compass(_dev->get_bus_id(), _compass_instance)) {
+        return false;
+    }
+    set_dev_id(_compass_instance, _dev->get_bus_id());
 
     set_rotation(_compass_instance, _rotation);
 
-    _dev->set_device_type(DEVTYPE_BMM150);
-    set_dev_id(_compass_instance, _dev->get_bus_id());
+    if (_force_external) {
+        set_external(_compass_instance, true);
+    }
 
     _perf_err = hal.util->perf_alloc(AP_HAL::Util::PC_COUNT, "BMM150_err");
 
@@ -231,7 +236,6 @@ bool AP_Compass_BMM150::init()
     return true;
 
 bus_error:
-    hal.console->printf("BMM150: Bus communication error\n");
     _dev->get_semaphore()->give();
     return false;
 }

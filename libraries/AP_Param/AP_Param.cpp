@@ -32,11 +32,18 @@
 #include <GCS_MAVLink/GCS.h>
 #include <StorageManager/StorageManager.h>
 #include <AP_BoardConfig/AP_BoardConfig.h>
+#include <AP_InternalError/AP_InternalError.h>
 #include <stdio.h>
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+    #include <SITL/SITL.h>
+#endif
 
 extern const AP_HAL::HAL &hal;
 
 uint16_t AP_Param::sentinal_offset;
+
+// singleton instance
+AP_Param *AP_Param::_singleton;
 
 #define ENABLE_DEBUG 1
 
@@ -70,6 +77,9 @@ uint16_t AP_Param::_num_vars;
 
 // cached parameter count
 uint16_t AP_Param::_parameter_count;
+uint16_t AP_Param::_count_marker;
+uint16_t AP_Param::_count_marker_done;
+HAL_Semaphore AP_Param::_count_sem;
 
 // storage and naming information about all types that can be saved
 const AP_Param::Info *AP_Param::_var_info;
@@ -78,7 +88,7 @@ struct AP_Param::param_override *AP_Param::param_overrides = nullptr;
 uint16_t AP_Param::num_param_overrides = 0;
 uint16_t AP_Param::num_read_only = 0;
 
-ObjectBuffer<AP_Param::param_save> AP_Param::save_queue{30};
+ObjectBuffer_TS<AP_Param::param_save> AP_Param::save_queue{30};
 bool AP_Param::registered_save_handler;
 
 // we need a dummy object for the parameter save callback
@@ -101,6 +111,9 @@ const AP_Param::param_defaults_struct AP_Param::param_defaults_data = {
 // storage object
 StorageAccess AP_Param::_storage(StorageManager::StorageParam);
 
+// backup storage object
+StorageAccess AP_Param::_storage_bak(StorageManager::StorageParamBak);
+
 // flags indicating frame type
 uint16_t AP_Param::_frame_type_flags;
 
@@ -108,6 +121,7 @@ uint16_t AP_Param::_frame_type_flags;
 void AP_Param::eeprom_write_check(const void *ptr, uint16_t ofs, uint8_t size)
 {
     _storage.write_block(ofs, ptr, size);
+    _storage_bak.write_block(ofs, ptr, size);
 }
 
 bool AP_Param::_hide_disabled_groups = true;
@@ -149,7 +163,7 @@ void AP_Param::erase_all(void)
 */
 uint32_t AP_Param::group_id(const struct GroupInfo *grpinfo, uint32_t base, uint8_t i, uint8_t shift)
 {
-    if (grpinfo[i].idx == 0 && shift != 0 && !(grpinfo[i].flags & AP_PARAM_NO_SHIFT)) {
+    if (grpinfo[i].idx == 0 && shift != 0 && !(grpinfo[i].flags & AP_PARAM_FLAG_NO_SHIFT)) {
         /*
           this is a special case for a bug in the original design. An
           idx of 0 shifted by n bits is still zero, which makes it
@@ -193,7 +207,7 @@ bool AP_Param::check_group_info(const struct AP_Param::GroupInfo *  group_info,
             return false;
         }
         if (group_shift != 0 && idx == 0) {
-            // great idx 0 as 63 for duplicates. See group_id()
+            // treat idx 0 as 63 for duplicates. See group_id()
             idx = 63;
         }
         if (used_mask & (1ULL<<idx)) {
@@ -314,18 +328,31 @@ bool AP_Param::check_var_info(void)
 // setup the _var_info[] table
 bool AP_Param::setup(void)
 {
-    struct EEPROM_header hdr;
+    struct EEPROM_header hdr {};
+    struct EEPROM_header hdr2 {};
 
     // check the header
     _storage.read_block(&hdr, 0, sizeof(hdr));
+    _storage_bak.read_block(&hdr2, 0, sizeof(hdr2));
     if (hdr.magic[0] != k_EEPROM_magic0 ||
         hdr.magic[1] != k_EEPROM_magic1 ||
         hdr.revision != k_EEPROM_revision) {
+        if (hdr2.magic[0] == k_EEPROM_magic0 &&
+            hdr2.magic[1] == k_EEPROM_magic1 &&
+            hdr2.revision == k_EEPROM_revision &&
+            _storage.copy_area(_storage_bak)) {
+            // restored from backup
+            INTERNAL_ERROR(AP_InternalError::error_t::params_restored);
+            return true;
+        }
         // header doesn't match. We can't recover any variables. Wipe
         // the header and setup the sentinal directly after the header
         Debug("bad header in setup - erasing");
         erase_all();
     }
+
+    // ensure that backup is in sync with primary
+    _storage_bak.copy_area(_storage);
 
     return true;
 }
@@ -379,6 +406,14 @@ bool AP_Param::get_base(const struct Info &info, ptrdiff_t &base)
     return true;
 }
 
+namespace AP {
+
+AP_Param *param()
+{
+    return AP_Param::get_singleton();
+}
+
+}
 
 // find the info structure given a header and a group_info table
 // return the Info structure and a pointer to the variables storage
@@ -895,6 +930,26 @@ AP_Param::find_by_index(uint16_t idx, enum ap_var_type *ptype, ParamToken *token
     return ap;    
 }
 
+// by-name equivalent of find_by_index()
+AP_Param* AP_Param::find_by_name(const char* name, enum ap_var_type *ptype, ParamToken *token)
+{
+    AP_Param *ap;
+    uint16_t count = 0;
+    for (ap = AP_Param::first(token, ptype);
+         ap && *ptype != AP_PARAM_GROUP && *ptype != AP_PARAM_NONE;
+         ap = AP_Param::next_scalar(token, ptype)) {
+        int32_t ret = strncasecmp(name, _var_info[token->key].name, AP_MAX_NAME_SIZE);
+        if (ret >= 0) {
+            char buf[AP_MAX_NAME_SIZE];
+            ap->copy_name_token(*token, buf, AP_MAX_NAME_SIZE);
+            if (strncasecmp(name, buf, AP_MAX_NAME_SIZE) == 0) {
+                break;
+            }
+        }
+        count++;
+    }
+    return ap;
+}
 
 /*
   Find a variable by pointer, returning key. This is used for loading pointer variables
@@ -956,6 +1011,23 @@ bool AP_Param::find_key_by_pointer(const void *ptr, uint16_t &key)
             continue;
         }
         if (find_key_by_pointer_group(ptr, i, ginfo, offset, key)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+  Find key to top level group parameters by pointer
+*/
+bool AP_Param::find_top_level_key_by_pointer(const void *ptr, uint16_t &key)
+{
+    for (uint16_t i=0; i<_num_vars; i++) {
+        if (_var_info[i].type != AP_PARAM_GROUP) {
+            continue;
+        }
+        if (ptr == (void **)_var_info[i].ptr) {
+            key = _var_info[i].key;
             return true;
         }
     }
@@ -1046,7 +1118,7 @@ void AP_Param::save_sync(bool force_save)
 
     if (phdr.type == AP_PARAM_INT8 && ginfo != nullptr && (ginfo->flags & AP_PARAM_FLAG_ENABLE)) {
         // clear cached parameter count
-        _parameter_count = 0;
+        invalidate_count();
     }
     
     char name[AP_MAX_NAME_SIZE+1];
@@ -1106,12 +1178,21 @@ void AP_Param::save_sync(bool force_save)
 */
 void AP_Param::save(bool force_save)
 {
-    struct param_save p;
+    struct param_save p, p2;
     p.param = this;
     p.force_save = force_save;
+    if (save_queue.peek(p2) &&
+        p2.param == this &&
+        p2.force_save == force_save) {
+        // this one is already at the head of the list to be
+        // saved. This check is cheap and catches the case where we
+        // are flooding the save queue with one parameter (eg. mission
+        // creation, changing MIS_TOTAL)
+        return;
+    }
     while (!save_queue.push(p)) {
         // if we can't save to the queue
-        if (hal.util->get_soft_armed()) {
+        if (hal.util->get_soft_armed() || !hal.scheduler->in_main_thread()) {
             // if we are armed then don't sleep, instead we lose the
             // parameter save
             return;
@@ -1431,9 +1512,12 @@ void AP_Param::reload_defaults_file(bool last_pass)
         if (load_defaults_file(default_file, last_pass)) {
             printf("Loaded defaults from %s\n", default_file);
         } else {
-            printf("Failed to load defaults from %s\n", default_file);
+            AP_HAL::panic("Failed to load defaults from %s\n", default_file);
         }
     }
+#endif
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL && !defined(HAL_BUILD_AP_PERIPH)
+    hal.util->set_cmdline_parameters();
 #endif
 }
 
@@ -1448,7 +1532,7 @@ void AP_Param::load_object_from_eeprom(const void *object_pointer, const struct 
     uint16_t key;
 
     // reset cached param counter as we may be loading a dynamic var_info
-    _parameter_count = 0;
+    invalidate_count();
     
     if (!find_key_by_pointer(object_pointer, key)) {
         hal.console->printf("ERROR: Unable to find param pointer\n");
@@ -1948,6 +2032,16 @@ bool AP_Param::parse_param_line(char *line, char **vname, float &value, bool &re
     if (strlen(pname) > AP_MAX_NAME_SIZE) {
         return false;
     }
+
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+    // Workaround to prevent FORMAT_VERSION in param file resulting in invalid
+    // EEPROM. For details, see: https://github.com/ArduPilot/ardupilot/issues/15579
+    if (strcmp(pname, "FORMAT_VERSION") == 0) {
+        ::printf("Warning: Ignoring FORMAT_VERSION in param file\n");
+        return false;
+    }
+#endif
+
     const char *value_s = strtok_r(nullptr, ", =\t\r\n", &saveptr);
     if (value_s == nullptr) {
         return false;
@@ -2297,19 +2391,44 @@ void AP_Param::send_parameter(const char *name, enum ap_var_type var_type, uint8
 uint16_t AP_Param::count_parameters(void)
 {
     // if we haven't cached the parameter count yet...
-    uint16_t ret = _parameter_count;
-    if (0 == ret) {
+    WITH_SEMAPHORE(_count_sem);
+    if (_parameter_count != 0 &&
+        _count_marker == _count_marker_done) {
+        return _parameter_count;
+    }
+    /*
+      cope with another thread invalidating the count while we are
+      counting
+     */
+    uint8_t limit = 4;
+    while ((_parameter_count == 0 ||
+            _count_marker != _count_marker_done) &&
+           limit--) {
         AP_Param  *vp;
         AP_Param::ParamToken token;
+        uint16_t count = 0;
+        uint16_t marker = _count_marker;
 
         for (vp = AP_Param::first(&token, nullptr);
              vp != nullptr;
              vp = AP_Param::next_scalar(&token, nullptr)) {
-            ret++;
+            count++;
         }
-        _parameter_count = ret;
+        _parameter_count = count;
+        _count_marker_done = marker;
     }
-    return ret;
+    return _parameter_count;
+}
+
+/*
+  invalidate parameter count cache
+ */
+void AP_Param::invalidate_count(void)
+{
+    // we don't take the semaphore here as we don't want to block. The
+    // not-equal test is strong enough to ensure we get the right
+    // answer
+    _count_marker++;
 }
 
 /*
@@ -2386,6 +2505,39 @@ bool AP_Param::set_by_name(const char *name, float value)
     }
     // not a supported type
     return false;
+}
+
+/*
+  get a value by name
+ */
+bool AP_Param::get(const char *name, float &value)
+{
+    enum ap_var_type vtype;
+    AP_Param *vp = find(name, &vtype);
+    if (vp == nullptr) {
+        return false;
+    }
+    switch (vtype) {
+    case AP_PARAM_INT8:
+        value = ((AP_Int8 *)vp)->get();
+        break;
+    case AP_PARAM_INT16:
+        value = ((AP_Int16 *)vp)->get();
+        break;
+
+    case AP_PARAM_INT32:
+        value = ((AP_Int32 *)vp)->get();
+        break;
+
+    case AP_PARAM_FLOAT:
+        value = ((AP_Float *)vp)->get();
+        break;
+
+    default:
+        // not a supported type
+        return false;
+    }
+    return true;
 }
 
 /*
@@ -2467,7 +2619,7 @@ void AP_Param::show_all(AP_HAL::BetterStream *port, bool showKeyValues)
          ap;
          ap=AP_Param::next_scalar(&token, &type)) {
         if (showKeyValues) {
-            port->printf("Key %i: Index %i: GroupElement %i  :  ", token.key, token.idx, token.group_element);
+            port->printf("Key %u: Index %u: GroupElement %u  :  ", (unsigned)token.key, (unsigned)token.idx, (unsigned)token.group_element);
         }
         show(ap, token, type, port);
         hal.scheduler->delay(1);

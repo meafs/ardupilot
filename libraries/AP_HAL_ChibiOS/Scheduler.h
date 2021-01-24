@@ -54,11 +54,11 @@
 #endif
 
 #ifndef TIMER_THD_WA_SIZE
-#define TIMER_THD_WA_SIZE   2048
+#define TIMER_THD_WA_SIZE   1536
 #endif
 
 #ifndef RCIN_THD_WA_SIZE
-#define RCIN_THD_WA_SIZE    512
+#define RCIN_THD_WA_SIZE    768
 #endif
 
 #ifndef IO_THD_WA_SIZE
@@ -66,11 +66,11 @@
 #endif
 
 #ifndef STORAGE_THD_WA_SIZE
-#define STORAGE_THD_WA_SIZE 2048
+#define STORAGE_THD_WA_SIZE 1536
 #endif
 
 #ifndef MONITOR_THD_WA_SIZE
-#define MONITOR_THD_WA_SIZE 512
+#define MONITOR_THD_WA_SIZE 768
 #endif
 
 /* Scheduler implementation: */
@@ -92,7 +92,8 @@ public:
 
     bool     in_main_thread() const override { return get_main_thread() == chThdGetSelfX(); }
 
-    void     system_initialized() override;
+    void     set_system_initialized() override;
+    bool     is_system_initialized() override { return _initialized; };
     void     hal_initialized() { _hal_initialized = true; }
 
     bool     check_called_boost(void);
@@ -103,8 +104,15 @@ public:
       be used to prevent watchdog reset during expected long delays
       A value of zero cancels the previous expected delay
      */
+    void     _expect_delay_ms(uint32_t ms);
     void     expect_delay_ms(uint32_t ms) override;
 
+    /*
+      return true if we are in a period of expected delay. This can be
+      used to suppress error messages
+     */
+    bool in_expected_delay(void) const override;
+    
     /*
       disable interrupts and return a context that can be used to
       restore the interrupt state. This can be used to protect
@@ -134,6 +142,7 @@ private:
     uint32_t expect_delay_start;
     uint32_t expect_delay_length;
     uint32_t expect_delay_nesting;
+    HAL_Semaphore expect_delay_sem;
 
     AP_HAL::MemberProc _timer_proc[CHIBIOS_SCHEDULER_MAX_TIMER_PROCS];
     uint8_t _num_timer_procs;
@@ -164,5 +173,12 @@ private:
     void _run_timers();
     void _run_io(void);
     static void thread_create_trampoline(void *ctx);
+
+#if defined STM32H7
+    void check_low_memory_is_zero();
+#endif
+
+    // check for free stack space
+    void check_stack_free(void);
 };
 #endif

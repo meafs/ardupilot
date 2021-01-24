@@ -51,6 +51,9 @@ class AutoTestSub(AutoTest):
     def test_filepath(self):
          return os.path.realpath(__file__)
 
+    def set_current_test_name(self, name):
+        self.current_test_name_directory = "ArduSub_Tests/" + name + "/"
+
     def default_mode(self):
         return 'MANUAL'
 
@@ -60,19 +63,10 @@ class AutoTestSub(AutoTest):
     def default_frame(self):
         return 'vectored'
 
-    def init(self):
-        super(AutoTestSub, self).init()
-
-        # FIXME:
-        self.set_parameter("FS_GCS_ENABLE", 0)
-
     def is_sub(self):
         return True
 
-    def arming_test_mission(self):
-        return os.path.join(testdir, "ArduSub-Missions", "test_arming.txt")
-
-    def watch_altitude_maintained(self, delta=0.5, timeout=5.0):
+    def watch_altitude_maintained(self, delta=1, timeout=5.0):
         """Watch and wait for the actual altitude to be maintained
 
         Keyword Arguments:
@@ -102,9 +96,15 @@ class AutoTestSub(AutoTest):
         self.mavproxy.send('mode ALT_HOLD\n')
         self.wait_mode('ALT_HOLD')
 
-
-        self.set_rc(Joystick.Throttle, 1000)
-        self.wait_altitude(alt_min=-6, alt_max=-5)
+        msg = self.mav.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=5)
+        if msg is None:
+            raise NotAchievedException("Did not get GLOBAL_POSITION_INT")
+        pwm = 1000
+        if msg.relative_alt/1000.0 < -5.5:
+            # need to g`o up, not down!
+            pwm = 2000
+        self.set_rc(Joystick.Throttle, pwm)
+        self.wait_altitude(altitude_min=-6, altitude_max=-5)
         self.set_rc(Joystick.Throttle, 1500)
 
         # let the vehicle settle (momentum / stopping point shenanigans....)
@@ -113,7 +113,7 @@ class AutoTestSub(AutoTest):
         self.watch_altitude_maintained()
 
         self.set_rc(Joystick.Throttle, 1000)
-        self.wait_altitude(alt_min=-20, alt_max=-19)
+        self.wait_altitude(altitude_min=-20, altitude_max=-19)
         self.set_rc(Joystick.Throttle, 1500)
 
         # let the vehicle settle (momentum / stopping point shenanigans....)
@@ -122,7 +122,7 @@ class AutoTestSub(AutoTest):
         self.watch_altitude_maintained()
 
         self.set_rc(Joystick.Throttle, 1900)
-        self.wait_altitude(alt_min=-14, alt_max=-13)
+        self.wait_altitude(altitude_min=-14, altitude_max=-13)
         self.set_rc(Joystick.Throttle, 1500)
 
         # let the vehicle settle (momentum / stopping point shenanigans....)
@@ -131,7 +131,7 @@ class AutoTestSub(AutoTest):
         self.watch_altitude_maintained()
 
         self.set_rc(Joystick.Throttle, 1900)
-        self.wait_altitude(alt_min=-5, alt_max=-4)
+        self.wait_altitude(altitude_min=-5, altitude_max=-4)
         self.set_rc(Joystick.Throttle, 1500)
 
         # let the vehicle settle (momentum / stopping point shenanigans....)
@@ -140,6 +140,68 @@ class AutoTestSub(AutoTest):
         self.watch_altitude_maintained()
 
         self.disarm_vehicle()
+
+    def test_pos_hold(self):
+        """Test POSHOLD mode"""
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        # point North
+        self.reach_heading_manual(0)
+        self.mavproxy.send('mode POSHOLD\n')
+        self.wait_mode('POSHOLD')
+
+        #dive a little 
+        self.set_rc(Joystick.Throttle, 1300)
+        self.delay_sim_time(3)
+        self.set_rc(Joystick.Throttle, 1500)
+        self.delay_sim_time(2)
+
+        # Save starting point
+        msg = self.mav.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=5)
+        if msg is None:
+            raise NotAchievedException("Did not get GLOBAL_POSITION_INT")
+        start_pos = self.mav.location()
+        # Hold in perfect conditions
+        self.progress("Testing position hold in perfect conditions")
+        self.delay_sim_time(10)
+        distance_m = self.get_distance(start_pos, self.mav.location())
+        if distance_m > 1:
+            raise NotAchievedException("Position Hold was unable to keep position in calm waters within 1 meter after 10 seconds, drifted {} meters".format(distance_m))
+
+        # Hold in 1 m/s current
+        self.progress("Testing position hold in current")
+        self.set_parameter("SIM_WIND_SPD", 1)
+        self.set_parameter("SIM_WIND_T", 1)
+        self.delay_sim_time(10)
+        distance_m = self.get_distance(start_pos, self.mav.location())
+        if distance_m > 1:
+            raise NotAchievedException("Position Hold was unable to keep position in 1m/s current within 1 meter after 10 seconds, drifted {} meters".format(distance_m))
+
+        # Move forward slowly in 1 m/s current
+        start_pos = self.mav.location()
+        self.progress("Testing moving forward in position hold in 1m/s current")
+        self.set_rc(Joystick.Forward, 1600)
+        self.delay_sim_time(10)
+        distance_m = self.get_distance(start_pos, self.mav.location())
+        bearing = self.get_bearing(start_pos, self.mav.location())
+        if distance_m < 2 or (bearing > 30 and bearing < 330):
+            raise NotAchievedException("Position Hold was unable to move north 2 meters, moved {} at {} degrees instead".format(distance_m, bearing))
+        self.disarm_vehicle()
+
+    def test_mot_thst_hover_ignore(self):
+        """Test if we are ignoring MOT_THST_HOVER parameter
+        """
+
+        # Test default parameter value
+        mot_thst_hover_value = self.get_parameter("MOT_THST_HOVER")
+        if mot_thst_hover_value != 0.5:
+            raise NotAchievedException("Unexpected default MOT_THST_HOVER parameter value {}".format(mot_thst_hover_value))
+
+        # Test if parameter is being ignored
+        for value in [0.25, 0.75]:
+            self.set_parameter("MOT_THST_HOVER", value)
+            self.test_alt_hold()
+
 
     def dive_manual(self):
         self.wait_ready_to_arm()
@@ -169,6 +231,12 @@ class AutoTestSub(AutoTest):
         self.disarm_vehicle()
         self.progress("Manual dive OK")
 
+        m = self.mav.recv_match(type='SCALED_PRESSURE3', blocking=True)
+        if m is None:
+            raise NotAchievedException("Did not get SCALED_PRESSURE3")
+        if m.temperature != 2650:
+            raise NotAchievedException("Did not get correct TSYS01 temperature")
+
     def dive_mission(self, filename):
         self.progress("Executing mission %s" % filename)
         self.load_mission(filename)
@@ -176,8 +244,7 @@ class AutoTestSub(AutoTest):
 
         self.arm_vehicle()
 
-        self.mavproxy.send('mode auto\n')
-        self.wait_mode('AUTO')
+        self.change_mode('AUTO')
 
         self.wait_waypoint(1, 5, max_dist=5)
 
@@ -186,7 +253,10 @@ class AutoTestSub(AutoTest):
         self.progress("Mission OK")
 
     def test_gripper_mission(self):
-        self.context_push()
+        with self.Context(self):
+            self.test_gripper_body()
+
+    def test_gripper_body(self):
         ex = None
         try:
             try:
@@ -199,14 +269,13 @@ class AutoTestSub(AutoTest):
             self.mavproxy.send('mode loiter\n')
             self.wait_ready_to_arm()
             self.arm_vehicle()
-            self.mavproxy.send('mode auto\n')
-            self.wait_mode('AUTO')
+            self.change_mode('AUTO')
             self.mavproxy.expect("Gripper Grabbed")
             self.mavproxy.expect("Gripper Released")
         except Exception as e:
-            self.progress("Exception caught")
+            self.progress("Exception caught: %s" % (
+                self.get_exception_stacktrace(e)))
             ex = e
-        self.context_pop()
         if ex is not None:
             raise ex
 
@@ -220,31 +289,32 @@ class AutoTestSub(AutoTest):
 
         lat = 5
         lon = 5
-        alt = 10
+        alt = -10
+
+        # send a position-control command
+        self.mav.mav.set_position_target_global_int_send(
+            0, # timestamp
+            1, # target system_id
+            1, # target component id
+            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+            0b1111111111111000, # mask specifying use-only-lat-lon-alt
+            lat, # lat
+            lon, # lon
+            alt, # alt
+            0, # vx
+            0, # vy
+            0, # vz
+            0, # afx
+            0, # afy
+            0, # afz
+            0, # yaw
+            0, # yawrate
+        )
 
         tstart = self.get_sim_time()
         while True:
             if self.get_sim_time_cached() - tstart > 200:
                 raise NotAchievedException("Did not move far enough")
-            # send a position-control command
-            self.mav.mav.set_position_target_global_int_send(
-                0, # timestamp
-                1, # target system_id
-                1, # target component id
-                mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-                0b1111111111111000, # mask specifying use-only-lat-lon-alt
-                lat, # lat
-                lon, # lon
-                alt, # alt
-                0, # vx
-                0, # vy
-                0, # vz
-                0, # afx
-                0, # afy
-                0, # afz
-                0, # yaw
-                0, # yawrate
-            )
             pos = self.mav.recv_match(type='GLOBAL_POSITION_INT',
                                       blocking=True)
             delta = self.get_distance_int(startpos, pos)
@@ -256,12 +326,22 @@ class AutoTestSub(AutoTest):
 
     def reboot_sitl(self):
         """Reboot SITL instance and wait it to reconnect."""
-        self.mavproxy.send("reboot\n")
-        self.mavproxy.expect("Init ArduSub")
-        # empty mav to avoid getting old timestamps:
-        while self.mav.recv_match(blocking=False):
-            pass
+        self.context_push()
+        self.context_collect("STATUSTEXT")
+        self.send_reboot_command()
+        # "Init ArduSub" comes out as raw text, not a statustext
+        for i in range(2):
+            try:
+                self.wait_statustext("ArduPilot Ready", check_context=True, wallclock_timeout=True)
+            except ConnectionResetError as e:
+                pass
+        self.context_pop()
         self.initialise_after_reboot_sitl()
+
+    def apply_defaultfile_parameters(self):
+        super(AutoTestSub, self).apply_defaultfile_parameters()
+        # FIXME:
+        self.set_parameter("FS_GCS_ENABLE", 0)
 
     def disabled_tests(self):
         ret = super(AutoTestSub, self).disabled_tests()
@@ -278,6 +358,7 @@ class AutoTestSub(AutoTest):
             ("DiveManual", "Dive manual", self.dive_manual),
 
             ("AltitudeHold", "Test altitude holde mode", self.test_alt_hold),
+            ("PositionHold", "Test position hold mode", self.test_pos_hold),
 
             ("DiveMission",
              "Dive mission",
@@ -287,14 +368,19 @@ class AutoTestSub(AutoTest):
              "Test gripper mission items",
              self.test_gripper_mission),
 
+            ("MotorThrustHoverParameterIgnore", "Test if we are ignoring MOT_THST_HOVER", self.test_mot_thst_hover_ignore),
+
             ("SET_POSITION_TARGET_GLOBAL_INT",
              "Move vehicle using SET_POSITION_TARGET_GLOBAL_INT",
              self.dive_set_position_target),
 
-            ("DownLoadLogs", "Download logs", lambda:
-             self.log_download(
-                 self.buildlogs_path("ArduSub-log.bin"),
-                 upload_logs=len(self.fail_list) > 0)),
+            ("TestLogDownloadMAVProxy",
+             "Test Onboard Log Download using MAVProxy",
+             self.test_log_download_mavproxy),
+
+            ("LogUpload",
+             "Upload logs",
+             self.log_upload),
         ])
 
         return ret

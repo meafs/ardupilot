@@ -52,6 +52,8 @@
 #include "GCS_Mavlink.h"
 #include "GCS_Tracker.h"
 
+#include "AP_Arming.h"
+
 #ifdef ENABLE_SCRIPTING
 #include <AP_Scripting/AP_Scripting.h>
 #endif
@@ -73,14 +75,11 @@ public:
 
     Tracker(void);
 
-    // HAL::Callbacks implementation.
-    void loop() override;
+    void arm_servos();
+    void disarm_servos();
 
 private:
     Parameters g;
-
-    // main loop scheduler
-    AP_Scheduler scheduler;
 
     uint32_t start_time_ms = 0;
 
@@ -167,9 +166,6 @@ private:
     static const AP_Param::Info var_info[];
     static const struct LogStructure log_structure[];
 
-    // true if the compass's initial location has been set
-    bool compass_init_location;
-
     // Tracker.cpp
     void get_scheduler_tasks(const AP_Scheduler::Task *&tasks,
                              uint8_t &task_count,
@@ -218,8 +214,6 @@ private:
     bool get_home_eeprom(struct Location &loc);
     bool set_home_eeprom(const Location &temp) WARN_IF_UNUSED;
     bool set_home(const Location &temp) WARN_IF_UNUSED;
-    void arm_servos();
-    void disarm_servos();
     void prepare_servos();
     void set_mode(Mode &newmode, ModeReason reason);
     bool set_mode(uint8_t new_mode, ModeReason reason) override;
@@ -238,6 +232,9 @@ private:
     void tracking_update_pressure(const mavlink_scaled_pressure_t &msg);
     void tracking_manual_control(const mavlink_manual_control_t &msg);
     void update_armed_disarmed();
+
+    // Arming/Disarming management class
+    AP_Arming_Tracker arming;
 
     // Mission library
     AP_Mission mission{

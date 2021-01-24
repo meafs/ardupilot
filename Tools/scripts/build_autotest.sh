@@ -56,7 +56,7 @@ report() {
     d="$1"
     old="$2"
     new="$3"
-    cat <<EOF | mail -s 'build failed' drones-discuss@googlegroups.com
+    cat <<EOF | mail -s 'build failed' ardupilot.devel@google.com
 A build of $d failed at `date`
 
 You can view the build logs at https://autotest.ardupilot.org/
@@ -69,7 +69,7 @@ EOF
 
 report_pull_failure() {
     d="$1"
-    git show origin/master | mail -s 'APM pull failed' drones-discuss@googlegroups.com
+    git show origin/master | mail -s 'APM pull failed' ardupilot.devel@google.com
     exit 1
 }
 
@@ -89,12 +89,6 @@ popd
 
 rsync -a APM/Tools/autotest/web-firmware/ buildlogs/binaries/
 
-echo "Updating pymavlink"
-pushd APM/modules/mavlink/pymavlink
-git show
-python setup.py build install --user
-popd
-
 echo "Updating MAVProxy"
 pushd MAVProxy
 git fetch origin
@@ -103,10 +97,18 @@ git show
 python setup.py build install --user
 popd
 
+echo "Updating pymavlink"
+pushd APM/modules/mavlink/pymavlink
+git show
+python setup.py build install --user
+popd
+
 githash=$(cd APM && git rev-parse HEAD)
 hdate=$(date +"%Y-%m-%d-%H:%m")
 
 (cd APM && Tools/scripts/build_parameters.sh)
+
+(cd APM && Tools/scripts/build_log_message_documentation.sh)
 
 (cd APM && Tools/scripts/build_docs.sh)
 

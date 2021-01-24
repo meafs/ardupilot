@@ -18,6 +18,7 @@
 
 #include "GCS.h"
 #include <AP_Logger/AP_Logger.h>
+#include <AP_BoardConfig/AP_BoardConfig.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -36,6 +37,12 @@ GCS_MAVLINK::queued_param_send()
 {
     // send parameter async replies
     uint8_t async_replies_sent_count = send_parameter_async_replies();
+
+    // now send the streaming parameters (from PARAM_REQUEST_LIST)
+    if (_queued_parameter == nullptr) {
+        // .... or not....
+        return;
+    }
 
     const uint32_t tnow = AP_HAL::millis();
     const uint32_t tstart = AP_HAL::micros();
@@ -64,11 +71,7 @@ GCS_MAVLINK::queued_param_send()
     }
     count -= async_replies_sent_count;
 
-    if (_queued_parameter == nullptr) {
-        return;
-    }
-
-    while (count && _queued_parameter != nullptr) {
+    while (count && _queued_parameter != nullptr && get_last_txbuf() > 50) {
         char param_name[AP_MAX_NAME_SIZE];
         _queued_parameter->copy_name_token(_queued_parameter_token, param_name, sizeof(param_name), true);
 
@@ -274,12 +277,17 @@ void GCS_MAVLINK::handle_param_set(const mavlink_message_t &msg)
 
     float old_value = vp->cast_to_float(var_type);
 
+    if (parameter_flags & AP_PARAM_FLAG_INTERNAL_USE_ONLY) {
+        // the user can set BRD_OPTIONS to enable set of internal
+        // parameters, for developer testing or unusual use cases
+        if (AP_BoardConfig::allow_set_internal_parameters()) {
+            parameter_flags &= ~AP_PARAM_FLAG_INTERNAL_USE_ONLY;
+        }
+    }
+
     if ((parameter_flags & AP_PARAM_FLAG_INTERNAL_USE_ONLY) || vp->is_read_only()) {
         gcs().send_text(MAV_SEVERITY_WARNING, "Param write denied (%s)", key);
-        // echo back the incorrect value so that we fulfull the
-        // parameter state machine requirements:
-        send_parameter_value(key, var_type, packet.param_value);
-        // and then announce what the correct value is:
+        // send the readonly value
         send_parameter_value(key, var_type, old_value);
         return;
     }
@@ -299,6 +307,10 @@ void GCS_MAVLINK::handle_param_set(const mavlink_message_t &msg)
     // save the change
     vp->save(force_save);
 
+    if (force_save && (parameter_flags & AP_PARAM_FLAG_ENABLE)) {
+        AP_Param::invalidate_count();
+    }
+    
     AP_Logger *logger = AP_Logger::get_singleton();
     if (logger != nullptr) {
         logger->Write_Parameter(key, vp->cast_to_float(var_type));

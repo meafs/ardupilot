@@ -3,6 +3,7 @@
 #include <pthread.h>
 
 #include "AP_HAL_Linux.h"
+
 #include "Semaphores.h"
 #include "Thread.h"
 
@@ -35,7 +36,8 @@ public:
 
     void     register_timer_failsafe(AP_HAL::Proc, uint32_t period_us) override;
 
-    void     system_initialized() override;
+    void     set_system_initialized() override;
+    bool     is_system_initialized() override { return _initialized; };
 
     void     reboot(bool hold_in_bootloader) override;
 

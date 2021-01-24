@@ -21,6 +21,8 @@
 #include <AP_Param/AP_Param.h>
 #include "GPS_detect_state.h"
 #include <AP_SerialManager/AP_SerialManager.h>
+#include <AP_MSP/msp.h>
+#include <AP_ExternalAHRS/AP_ExternalAHRS.h>
 
 /**
    maximum number of GPS instances available on this platform. If more
@@ -42,6 +44,18 @@
 
 #define UNIX_OFFSET_MSEC (17000ULL * 86400ULL + 52ULL * 10ULL * AP_MSEC_PER_WEEK - GPS_LEAPSECONDS_MILLIS)
 
+#ifndef GPS_MOVING_BASELINE
+#define GPS_MOVING_BASELINE !HAL_MINIMIZE_FEATURES && GPS_MAX_RECEIVERS>1
+#endif
+
+#ifndef HAL_MSP_GPS_ENABLED
+#define HAL_MSP_GPS_ENABLED HAL_MSP_SENSORS_ENABLED
+#endif
+
+#if GPS_MOVING_BASELINE
+#include "MovingBase.h"
+#endif // GPS_MOVING_BASELINE
+
 class AP_GPS_Backend;
 
 /// @class AP_GPS
@@ -51,6 +65,8 @@ class AP_GPS
     friend class AP_GPS_ERB;
     friend class AP_GPS_GSOF;
     friend class AP_GPS_MAV;
+    friend class AP_GPS_MSP;
+    friend class AP_GPS_ExternalAHRS;
     friend class AP_GPS_MTK;
     friend class AP_GPS_MTK19;
     friend class AP_GPS_NMEA;
@@ -99,6 +115,9 @@ public:
         GPS_TYPE_HEMI = 16, // hemisphere NMEA
         GPS_TYPE_UBLOX_RTK_BASE = 17,
         GPS_TYPE_UBLOX_RTK_ROVER = 18,
+        GPS_TYPE_MSP = 19,
+        GPS_TYPE_ALLYSTAR = 20, // AllyStar NMEA
+        GPS_TYPE_EXTERNAL_AHRS = 21,
     };
 
     /// GPS status codes
@@ -169,6 +188,7 @@ public:
         bool have_gps_yaw_accuracy;       ///< does the GPS give a heading accuracy estimate? Set to true only once available
         uint32_t last_gps_time_ms;          ///< the system time we got the last GPS timestamp, milliseconds
         uint32_t uart_timestamp_ms;         ///< optional timestamp from set_uart_timestamp()
+        uint32_t lagged_sample_count;       ///< number of samples with 50ms more lag than expected
 
         // all the following fields must only all be filled by RTK capable backend drivers
         uint32_t rtk_time_week_ms;         ///< GPS Time of Week of last baseline in milliseconds
@@ -193,6 +213,12 @@ public:
 
     // Pass mavlink data to message handlers (for MAV type)
     void handle_msg(const mavlink_message_t &msg);
+#if HAL_MSP_GPS_ENABLED
+    void handle_msp(const MSP::msp_gps_data_message_t &pkt);
+#endif
+#if HAL_EXTERNAL_AHRS_ENABLED
+    void handle_external(const AP_ExternalAHRS::gps_data_message_t &pkt);
+#endif
 
     // Accessor functions
 
@@ -375,7 +401,7 @@ public:
 
     // return true if the GPS currently has yaw available
     bool have_gps_yaw(uint8_t instance) const {
-        return state[instance].have_gps_yaw;
+        return !_force_disable_gps_yaw && state[instance].have_gps_yaw;
     }
     bool have_gps_yaw(void) const {
         return have_gps_yaw(primary_instance);
@@ -464,6 +490,11 @@ public:
         _force_disable_gps = disable;
     }
 
+    // used to disable GPS yaw for GPS failure testing in flight
+    void set_force_disable_yaw(bool disable) {
+        _force_disable_gps_yaw = disable;
+    }
+
     // handle possibly fragmented RTCM injection data
     void handle_gps_rtcm_fragment(uint8_t flags, const uint8_t *data, uint8_t len);
 
@@ -471,6 +502,9 @@ public:
     GPS_Type get_type(uint8_t instance) const {
         return instance>=GPS_MAX_RECEIVERS? GPS_Type::GPS_TYPE_NONE : GPS_Type(_type[instance].get());
     }
+
+    // get iTOW, if supported, zero otherwie
+    uint32_t get_itow(uint8_t instance) const;
 
 protected:
 
@@ -491,8 +525,15 @@ protected:
     AP_Int8 _auto_config;
     AP_Vector3f _antenna_offset[GPS_MAX_RECEIVERS];
     AP_Int16 _delay_ms[GPS_MAX_RECEIVERS];
+    AP_Int8  _com_port[GPS_MAX_RECEIVERS];
     AP_Int8 _blend_mask;
     AP_Float _blend_tc;
+    AP_Int16 _driver_options;
+    AP_Int8 _primary;
+
+#if GPS_MOVING_BASELINE
+    MovingBase mb_params[GPS_MAX_RECEIVERS];
+#endif // GPS_MOVING_BASELINE
 
     uint32_t _log_gps_bit = -1;
 
@@ -515,6 +556,12 @@ private:
 
         // delta time between the last pair of GPS updates in system milliseconds
         uint16_t delta_time_ms;
+
+        // count of delayed frames
+        uint8_t delayed_count;
+
+        // the average time delta
+        float average_delta_ms;
     };
     // Note allowance for an additional instance to contain blended data
     GPS_timing timing[GPS_MAX_INSTANCES];
@@ -587,12 +634,9 @@ private:
     void inject_data(uint8_t instance, const uint8_t *data, uint16_t len);
 
     // GPS blending and switching
-    Vector2f _NE_pos_offset_m[GPS_MAX_RECEIVERS]; // Filtered North,East position offset from GPS instance to blended solution in _output_state.location (m)
-    float _hgt_offset_cm[GPS_MAX_RECEIVERS]; // Filtered height offset from GPS instance relative to blended solution in _output_state.location (cm)
     Vector3f _blended_antenna_offset; // blended antenna offset
     float _blended_lag_sec; // blended receiver lag in seconds
     float _blend_weights[GPS_MAX_RECEIVERS]; // blend weight for each GPS. The blend weights must sum to 1.0 across all instances.
-    uint32_t _last_time_updated[GPS_MAX_RECEIVERS]; // the last value of state.last_gps_time_ms read for that GPS instance - used to detect new data.
     float _omega_lpf; // cutoff frequency in rad/sec of LPF applied to position offsets
     bool _output_is_blended; // true when a blended GPS solution being output
     uint8_t _blend_health_counter;  // 0 = perfectly health, 100 = very unhealthy
@@ -619,11 +663,19 @@ private:
         GPS_AUTO_CONFIG_ENABLE  = 1
     };
 
+    enum class GPSAutoSwitch {
+        NONE        = 0,
+        USE_BEST    = 1,
+        BLEND       = 2,
+        //USE_SECOND  = 3, deprecated for new primary param
+        USE_PRIMARY_IF_3D_FIX = 4,
+    };
+
     // used for flight testing with GPS loss
     bool _force_disable_gps;
 
-    // used to ensure we continue sending status messages if we ever detected the second GPS
-    bool has_had_second_instance;
+    // used for flight testing with GPS yaw loss
+    bool _force_disable_gps_yaw;
 };
 
 namespace AP {

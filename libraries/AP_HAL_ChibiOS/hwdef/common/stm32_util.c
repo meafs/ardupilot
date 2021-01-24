@@ -435,3 +435,33 @@ void system_halt_hook(void)
 #endif
 }
 
+// hook for stack overflow
+void stack_overflow(thread_t *tp)
+{
+#if !defined(HAL_BOOTLOADER_BUILD) && !defined(IOMCU_FW)
+    extern void AP_stack_overflow(const char *thread_name);
+    AP_stack_overflow(tp->name);
+    // if we get here then we are armed and got a stack overflow. We
+    // will report an internal error and keep trying to fly. We are
+    // quite likely to crash anyway due to memory corruption. The
+    // watchdog data should record the thread name and fault type
+#else
+    (void)tp;
+#endif
+}
+
+#if CH_DBG_ENABLE_STACK_CHECK == TRUE
+/*
+  check how much stack is free given a stack base. Assumes the fill
+  byte is 0x55
+ */
+uint32_t stack_free(void *stack_base)
+{
+    const uint32_t *p = (uint32_t *)stack_base;
+    const uint32_t canary_word = 0x55555555;
+    while (*p == canary_word) {
+        p++;
+    }
+    return ((uint32_t)p) - (uint32_t)stack_base;
+}
+#endif

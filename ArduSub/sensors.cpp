@@ -56,6 +56,7 @@ void Sub::read_rangefinder()
 
     // send rangefinder altitude and health to waypoint navigation library
     wp_nav.set_rangefinder_alt(rangefinder_state.enabled, rangefinder_state.alt_healthy, rangefinder_state.alt_cm_filt.get());
+    circle_nav.set_rangefinder_alt(rangefinder_state.enabled && wp_nav.rangefinder_used(), rangefinder_state.alt_healthy, rangefinder_state.alt_cm_filt.get());
 
 #else
     rangefinder_state.enabled = false;
@@ -105,4 +106,12 @@ void Sub::accel_cal_update()
     if (ins.get_new_trim(trim_roll, trim_pitch)) {
         ahrs.set_trim(Vector3f(trim_roll, trim_pitch, 0));
     }
+}
+
+/*
+  ask airspeed sensor for a new value, duplicated from plane
+ */
+void Sub::read_airspeed()
+{
+    g2.airspeed.update(should_log(MASK_LOG_IMU));
 }

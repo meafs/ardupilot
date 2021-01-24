@@ -23,9 +23,10 @@
 
 #include <AP_Baro/AP_Baro.h>
 #include <AP_BoardConfig/AP_BoardConfig.h>     // board configuration library
-#include <AP_BoardConfig/AP_BoardConfig_CAN.h>
+#include <AP_CANManager/AP_CANManager.h>
 #include <AP_Button/AP_Button.h>
 #include <AP_GPS/AP_GPS.h>
+#include <AP_Generator/AP_Generator.h>
 #include <AP_Logger/AP_Logger.h>
 #include <AP_Notify/AP_Notify.h>                    // Notify library
 #include <AP_Param/AP_Param.h>
@@ -37,6 +38,13 @@
 #include <AP_ServoRelayEvents/AP_ServoRelayEvents.h>
 #include <AP_Camera/AP_RunCam.h>
 #include <AP_Hott_Telem/AP_Hott_Telem.h>
+#include <AP_ESC_Telem/AP_ESC_Telem.h>
+#include <AP_GyroFFT/AP_GyroFFT.h>
+#include <AP_VisualOdom/AP_VisualOdom.h>
+#include <AP_RCTelemetry/AP_VideoTX.h>
+#include <AP_MSP/AP_MSP.h>
+#include <AP_Frsky_Telem/AP_Frsky_Parameters.h>
+#include <AP_ExternalAHRS/AP_ExternalAHRS.h>
 
 class AP_Vehicle : public AP_HAL::HAL::Callbacks {
 
@@ -64,6 +72,9 @@ public:
     // subclass-specific initialisation can be done in init_ardupilot
     // which is called from setup().
     void setup(void) override final;
+
+    // HAL::Callbacks implementation.
+    void loop() override final;
 
     bool virtual set_mode(const uint8_t new_mode, const ModeReason reason) = 0;
     uint8_t virtual get_mode() const = 0;
@@ -122,10 +133,8 @@ public:
     };
 
     void get_common_scheduler_tasks(const AP_Scheduler::Task*& tasks, uint8_t& num_tasks);
-
-    // initialize the vehicle. Called from AP_BoardConfig
-    void init_vehicle();
-
+    // implementations *MUST* fill in all passed-in fields or we get
+    // Valgrind errors
     virtual void get_scheduler_tasks(const AP_Scheduler::Task *&tasks, uint8_t &task_count, uint32_t &log_bit) = 0;
 
     /*
@@ -160,18 +169,95 @@ public:
         return AP_HAL::millis() - _last_flying_ms;
     }
 
+    // returns true if the vehicle has crashed
+    virtual bool is_crashed() const;
+
+    /*
+      methods to control vehicle for use by scripting
+    */
+    virtual bool start_takeoff(float alt) { return false; }
+    virtual bool set_target_location(const Location& target_loc) { return false; }
+    virtual bool set_target_velocity_NED(const Vector3f& vel_ned) { return false; }
+    virtual bool set_target_angle_and_climbrate(float roll_deg, float pitch_deg, float yaw_deg, float climb_rate_ms, bool use_yaw_rate, float yaw_rate_degs) { return false; }
+
+    // get target location (for use by scripting)
+    virtual bool get_target_location(Location& target_loc) { return false; }
+
+    // set steering and throttle (-1 to +1) (for use by scripting with Rover)
+    virtual bool set_steering_and_throttle(float steering, float throttle) { return false; }
+
+    // control outputs enumeration
+    enum class ControlOutput {
+        Roll = 1,
+        Pitch = 2,
+        Throttle = 3,
+        Yaw = 4,
+        Lateral = 5,
+        MainSail = 6,
+        WingSail = 7,
+        Walking_Height = 8,
+        Last_ControlOutput  // place new values before this
+    };
+
+    // get control output (for use in scripting)
+    // returns true on success and control_value is set to a value in the range -1 to +1
+    virtual bool get_control_output(AP_Vehicle::ControlOutput control_output, float &control_value) { return false; }
+
+    // write out harmonic notch log messages
+    void write_notch_log_messages() const;
+    // update the harmonic notch
+    virtual void update_dynamic_notch() {};
+
+    // zeroing the RC outputs can prevent unwanted motor movement:
+    virtual bool should_zero_rc_outputs_on_reboot() const { return false; }
+
+    // reboot the vehicle in an orderly manner, doing various cleanups
+    // and flashing LEDs as appropriate
+    void reboot(bool hold_in_bootloader);
+
+    /*
+      get the distance to next wp in meters
+      return false if failed or n/a
+     */
+    virtual bool get_wp_distance_m(float &distance) const { return false; }
+
+    /*
+      get the current wp bearing in degrees
+      return false if failed or n/a
+     */
+    virtual bool get_wp_bearing_deg(float &bearing) const { return false; }
+
+    /*
+      get the current wp crosstrack error in meters
+      return false if failed or n/a
+     */
+    virtual bool get_wp_crosstrack_error_m(float &xtrack_error) const { return false; }
+
+#if HAL_WITH_FRSKY_TELEM_BIDIRECTIONAL
+    AP_Frsky_Parameters frsky_parameters;
+#endif
+
 protected:
 
     virtual void init_ardupilot() = 0;
     virtual void load_parameters() = 0;
+    virtual void set_control_channels() {}
 
     // board specific config
     AP_BoardConfig BoardConfig;
 
-#if HAL_WITH_UAVCAN
+#if HAL_MAX_CAN_PROTOCOL_DRIVERS
     // board specific config for CAN bus
-    AP_BoardConfig_CAN BoardConfig_CAN;
+    AP_CANManager can_mgr;
 #endif
+
+    // main loop scheduler
+    AP_Scheduler scheduler{FUNCTOR_BIND_MEMBER(&AP_Vehicle::fast_loop, void)};
+    virtual void fast_loop();
+
+    // IMU variables
+    // Integration time; time last loop took to run
+    float G_Dt;
 
     // sensor drivers
     AP_GPS gps;
@@ -185,6 +271,10 @@ protected:
 #if HAL_RUNCAM_ENABLED
     AP_RunCam runcam;
 #endif
+#if HAL_GYROFFT_ENABLED
+    AP_GyroFFT gyro_fft;
+#endif
+    AP_VideoTX vtx;
     AP_SerialManager serial_manager;
 
     AP_Relay relay;
@@ -206,22 +296,46 @@ protected:
     AP_Hott_Telem hott_telem;
 #endif
 
+#if HAL_VISUALODOM_ENABLED
+    AP_VisualOdom visual_odom;
+#endif
+
+    AP_ESC_Telem esc_telem;
+
+#if HAL_MSP_ENABLED
+    AP_MSP msp;
+#endif
+
+#if GENERATOR_ENABLED
+    AP_Generator generator;
+#endif
+
+#if HAL_EXTERNAL_AHRS_ENABLED
+    AP_ExternalAHRS externalAHRS;
+#endif
+    
     static const struct AP_Param::GroupInfo var_info[];
     static const struct AP_Scheduler::Task scheduler_tasks[];
 
-    void register_scheduler_delay_callback();
+#if OSD_ENABLED
+    void publish_osd_info();
+#endif
 
 private:
 
-    static AP_Vehicle *_singleton;
-    bool init_done;
-
+    // delay() callback that processing MAVLink packets
     static void scheduler_delay_callback();
 
-    // true if vehicle is probably flying
-    bool likely_flying;
-    // time when likely_flying last went true
-    uint32_t _last_flying_ms;
+    // if there's been a watchdog reset, notify the world via a
+    // statustext:
+    void send_watchdog_reset_statustext();
+
+    bool likely_flying;         // true if vehicle is probably flying
+    uint32_t _last_flying_ms;   // time when likely_flying last went true
+
+    static AP_Vehicle *_singleton;
+
+    bool done_safety_init;
 };
 
 namespace AP {

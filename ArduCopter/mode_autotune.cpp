@@ -60,7 +60,7 @@ void AutoTune::run()
         } else {
             copter.motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
         }
-        copter.attitude_control->reset_rate_controller_I_terms();
+        copter.attitude_control->reset_rate_controller_I_terms_smoothly();
         copter.attitude_control->set_yaw_target_to_current_heading();
 
         float target_roll, target_pitch, target_yaw_rate;
@@ -84,7 +84,7 @@ float AutoTune::get_pilot_desired_climb_rate_cms(void) const
     float target_climb_rate = copter.get_pilot_desired_climb_rate(copter.channel_throttle->get_control_in());
 
     // get avoidance adjusted climb rate
-    target_climb_rate = copter.get_avoidance_adjusted_climbrate(target_climb_rate);
+    target_climb_rate = copter.mode_autotune.get_avoidance_adjusted_climbrate(target_climb_rate);
 
     return target_climb_rate;
 }
